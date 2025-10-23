@@ -1,0 +1,117 @@
+const int PIN_TMP36 = A0;
+const int PIN_LDR = A1;
+const int LED_GREEN = 2;
+const int LED_YELLOW = 3;
+const int LED_RED = 4;
+const int BUZZER = 8;
+const int BUTTON_SILENCE = 7;
+
+float ambientTempC = 25.0;
+float tempWarning = 40.0;
+float tempAlarm = 55.0;
+int ambientLight = 800;
+int lightThreshold = 400;
+
+unsigned long lastStateChange = 0;
+const unsigned long persistMillis = 4000;
+unsigned long alarmSilenceStart = 0;
+const unsigned long silenceDuration = 60000;
+
+float readTempC() {
+  int raw = analogRead(PIN_TMP36);
+  float voltage = raw * 5.0 / 1023.0;
+  float tempC = (voltage - 0.5) * 100.0;
+  return tempC;
+}
+
+int readLDR() {
+  int raw = analogRead(PIN_LDR);
+  return raw;
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_YELLOW, OUTPUT);
+  pinMode(LED_RED, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(BUTTON_SILENCE, INPUT_PULLUP);
+
+  digitalWrite(LED_GREEN, LOW);
+  digitalWrite(LED_YELLOW, LOW);
+  digitalWrite(LED_RED, LOW);
+  digitalWrite(BUZZER, LOW);
+
+  Serial.println("Calibrating ambient sensors...");
+  const int samples = 40;
+  float tempSum = 0;
+  long lightSum = 0;
+  for (int i = 0; i < samples; i++) {
+    tempSum += readTempC();
+    lightSum += readLDR();
+    delay(125);
+  }
+  ambientTempC = tempSum / samples;
+  ambientLight = (int)(lightSum / samples);
+  tempWarning = ambientTempC + 15.0;
+  tempAlarm = ambientTempC + 25.0;
+  lightThreshold = max(50, (int)(ambientLight * 0.6));
+
+  Serial.println("Calibration done.");
+}
+
+void loop() {
+  float tempC = readTempC();
+  int lightRaw = readLDR();
+  unsigned long now = millis();
+
+  bool tempWarnCond = (tempC >= tempWarning);
+  bool tempAlarmCond = (tempC >= tempAlarm);
+  bool lightLowCond = (lightRaw <= lightThreshold);
+
+  bool alarmCondition = tempAlarmCond || (lightLowCond && tempWarnCond);
+  bool warningCondition = (!alarmCondition) && (tempWarnCond || lightLowCond);
+
+  static bool lastAlarmEval = false;
+  static unsigned long condStart = 0;
+  bool currentEval = alarmCondition;
+  if (currentEval != lastAlarmEval) {
+    condStart = now;
+    lastAlarmEval = currentEval;
+  }
+
+  bool alarmTriggered = false;
+  if (currentEval && (now - condStart >= persistMillis)) {
+    alarmTriggered = true;
+  }
+
+  bool buttonPressed = (digitalRead(BUTTON_SILENCE) == LOW);
+  if (buttonPressed) {
+    alarmSilenceStart = now;
+    Serial.println("Alarm silenced.");
+  }
+  bool isSilenced = (alarmSilenceStart > 0) && (now - alarmSilenceStart < silenceDuration);
+
+  if (alarmTriggered && !isSilenced) {
+    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_RED, HIGH);
+    digitalWrite(BUZZER, HIGH);
+    Serial.println("STATE: ALARM");
+  } else if (warningCondition) {
+    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(LED_YELLOW, HIGH);
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(BUZZER, LOW);
+    Serial.println("STATE: WARNING");
+  } else {
+    digitalWrite(LED_GREEN, HIGH);
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(BUZZER, LOW);
+    Serial.println("STATE: SAFE");
+  }
+
+  delay(500);
+}
+ 
